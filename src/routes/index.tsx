@@ -271,7 +271,7 @@ function Dashboard() {
           <div className="mt-6">
             <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-muted-foreground">Safety checklist</p>
             <ul className="space-y-2 text-sm">
-              <Step label="Emergency gesture recognised" s={alert === "ready" ? "pending" : "done"} />
+              <Step label="Emergency triggered" s={alert === "ready" ? "pending" : "done"} />
               <Step label="Alert confirmed" s={alert === "active" ? "done" : alert === "cancelled" ? "unavailable" : "pending"} note={alert === "cancelled" ? "cancelled" : undefined} />
               <Step label="Location obtained" s={coords ? "done" : loc === "denied" || loc === "unsupported" || loc === "error" ? "failed" : "pending"} note={loc === "denied" ? "permission denied" : loc === "requesting" ? "requesting…" : undefined} />
               <Step label={`Trusted contacts notified (${contacts.length})`} s={notify ?? (contacts.length ? "pending" : "unavailable")} note={notify === "simulated" ? "simulated — not sent" : notify === "unavailable" ? "no provider configured" : !contacts.length ? "no contacts" : undefined} />
