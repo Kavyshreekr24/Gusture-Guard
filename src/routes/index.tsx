@@ -308,7 +308,7 @@ function Dashboard() {
                   <div className="font-medium">{g.label}</div>
                   <div className="text-xs text-muted-foreground">{g.commandLabel} · hold {g.holdMs / 1000}s</div>
                 </div>
-                <span className="w-12 text-right font-mono text-xs text-success">{seen[g.id] ? `✓ ${(seen[g.id] * 100).toFixed(0)}%` : ""}</span>
+                <span className="w-12 text-right font-mono text-xs text-success">{seen[g.id] ? `✓ ${((seen[g.id] ?? 0) * 100).toFixed(0)}%` : ""}</span>
                 <button onClick={() => run(g.command, "manual button")} className="rounded-md border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring" aria-label={`Run ${g.commandLabel} manually`}>Run</button>
               </li>
             ))}
@@ -388,7 +388,7 @@ function StatusBlock({ tone, title, desc }: { tone: "success" | "muted"; title: 
   );
 }
 
-function Step({ label, s, note }: { label: string; s: StepState; note?: string }) {
+function Step({ label, s, note }: { label: string; s: StepState; note?: string | undefined }) {
   const map = { done: ["✓", "text-success"], pending: ["○", "text-muted-foreground"], unavailable: ["–", "text-muted-foreground"], simulated: ["◇", "text-warning"], failed: ["✕", "text-primary"] } as const;
   const [icon, cls] = map[s];
   return (
