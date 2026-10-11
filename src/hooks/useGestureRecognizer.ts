@@ -66,18 +66,49 @@ export function useGestureRecognizer(onStable: (gestureId: string, score: number
   }, []);
 
   const start = useCallback(async () => {
-    if (!navigator.mediaDevices?.getUserMedia) { setCam("unsupported"); return; }
+    const log = (...a: unknown[]) => console.log("[camera]", ...a);
+    if (!window.isSecureContext) { console.error("[camera] Not a secure context (https required)"); setCam("unsupported"); return; }
+    if (!navigator.mediaDevices?.getUserMedia) { console.error("[camera] getUserMedia unavailable"); setCam("unsupported"); return; }
     setCam("requesting");
-    void loadModel();
+    streamRef.current?.getTracks().forEach((t) => t.stop());
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: "user" }, audio: false });
+      // Flexible constraints first (no facingMode — many desktop webcams report none), then bare fallback.
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });
+      } catch (e: any) {
+        if (e?.name === "NotAllowedError") throw e;
+        console.warn("[camera] preferred constraints failed, retrying with video:true", e);
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      }
+      const track = stream.getVideoTracks()[0];
+      log("stream acquired", { tracks: stream.getVideoTracks().length, label: track?.label, state: track?.readyState, muted: track?.muted, settings: track?.getSettings?.() });
+      if (!track) throw new Error("Stream has no video track");
+      track.onended = () => console.warn("[camera] track ended");
+      track.onmute = () => console.warn("[camera] track muted (no frames from device)");
       streamRef.current = stream;
-      const v = videoRef.current!;
+      const v = videoRef.current;
+      if (!v) throw new Error("Video element not mounted");
+      v.muted = true; v.autoplay = true; v.playsInline = true;
+      v.setAttribute("playsinline", ""); v.setAttribute("muted", "");
       v.srcObject = stream;
+      if (v.readyState < 1) {
+        await new Promise<void>((res, rej) => {
+          const t = setTimeout(() => rej(new Error("Timed out waiting for video metadata")), 8000);
+          v.onloadedmetadata = () => { clearTimeout(t); res(); };
+        });
+      }
+      log("metadata loaded", { w: v.videoWidth, h: v.videoHeight });
       await v.play();
+      log("playing", { paused: v.paused, readyState: v.readyState });
       setCam("on");
+      // Load the model only after video is live, so GPU init can't stall first frames.
+      void loadModel();
     } catch (e: any) {
-      setCam(e?.name === "NotAllowedError" ? "denied" : "error");
+      console.error("[camera] init failed:", e?.name, e?.message, e);
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+      setCam(e?.name === "NotAllowedError" || e?.name === "SecurityError" ? "denied" : "error");
     }
   }, [loadModel]);
 
