@@ -185,8 +185,8 @@ function Dashboard() {
             <span className="font-mono text-xs text-muted-foreground">{rec.cam === "on" && rec.model === "ready" ? `${rec.fps} fps` : ""}</span>
           </div>
           <div className="relative aspect-[4/3] bg-background">
-            <video ref={rec.videoRef} playsInline muted className="absolute inset-0 h-full w-full -scale-x-100 object-cover" />
-            <canvas ref={rec.canvasRef} className="absolute inset-0 h-full w-full -scale-x-100 object-cover" />
+            <video ref={rec.videoRef} autoPlay playsInline muted className="absolute inset-0 z-0 h-full w-full -scale-x-100 object-cover" />
+            <canvas ref={rec.canvasRef} className="pointer-events-none absolute inset-0 z-[1] h-full w-full -scale-x-100 object-cover bg-transparent" />
             {rec.cam !== "on" && (
               <div className="absolute inset-0 grid place-items-center p-6 text-center">
                 <div className="max-w-sm space-y-3">
