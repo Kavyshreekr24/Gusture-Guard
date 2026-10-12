@@ -41,7 +41,7 @@ export function serviceTargets(s: ServiceSettings): Target[] {
   return list;
 }
 
-export const contactIcon = (l: ContactLabel) => ({ Mom: "👩", Dad: "👨", Friend: "🧑‍🤝‍🧑", "Emergency Contact": "⭐", Doctor: "🩺", Other: "👤" })[l];
+export const contactIcon = (l: ContactLabel) => ({ Mom: "👩", Dad: "👨", Friend: "🤝", "Emergency Contact": "⭐", Doctor: "🩺", Other: "👤" })[l];
 export const contactTarget = (c: Contact): Target => ({ kind: "contact", key: c.id, title: c.label === "Other" ? c.name : c.label, name: c.name, phone: c.phone, icon: contactIcon(c.label) });
 
 export const telHref = (phone: string) => `tel:${phone.replace(/[^\d+]/g, "")}`;
