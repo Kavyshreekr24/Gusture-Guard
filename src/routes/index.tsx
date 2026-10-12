@@ -22,7 +22,6 @@ export const Route = createFileRoute("/")({
 type AlertState = "ready" | "pending" | "active" | "cancelled";
 type StepState = "done" | "pending" | "unavailable" | "simulated" | "failed";
 type LocState = "unknown" | "requesting" | "granted" | "denied" | "unsupported" | "error";
-interface Contact { name: string; phone: string }
 interface LogItem { id: number; t: Date; kind: "detect" | "action" | "system" | "warn"; text: string }
 
 function Dashboard() {
