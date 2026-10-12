@@ -2,6 +2,8 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useGestureRecognizer } from "@/hooks/useGestureRecognizer";
 import { COUNTDOWN_S, GESTURES, GESTURE_BY_ID, type Command } from "@/lib/gestures";
+import { CONTACT_LABELS, MAX_CONTACTS, REGIONS, guessRegion, serviceTargets, type Contact, type ContactLabel, type Region, type ServiceSettings, type Target } from "@/lib/emergency";
+import { CallButton, EmergencyMode } from "@/components/EmergencyMode";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -39,6 +41,11 @@ function Dashboard() {
   const idRef = useRef(0);
   const alertRef = useRef(alert);
   alertRef.current = alert;
+  const [emergencyOpen, setEmergencyOpen] = useState(false);
+  const openRef = useRef(false);
+  openRef.current = emergencyOpen;
+  const loadedRef = useRef(false);
+  const [settings, setSettings] = useState<ServiceSettings>({ region: "IN", ambulance: "", hospitalName: "", hospitalPhone: "" });
 
   const say = useCallback((text: string) => {
     if (!speak || typeof window === "undefined" || !window.speechSynthesis) return;
@@ -50,15 +57,24 @@ function Dashboard() {
     setLog((l) => [{ id: ++idRef.current, t: new Date(), kind, text }, ...l].slice(0, 60));
   }, []);
 
-  // load contacts (stored only on this device)
+  // load contacts + service settings (stored only on this device)
   useEffect(() => {
-    try { setContacts(JSON.parse(localStorage.getItem("gg-contacts") ?? "[]")); } catch {}
+    try {
+      const raw = JSON.parse(localStorage.getItem("gg-contacts") ?? "[]") as Partial<Contact>[];
+      setContacts(raw.slice(0, MAX_CONTACTS).map((c, i) => ({ id: c.id ?? crypto.randomUUID(), name: c.name ?? "", phone: c.phone ?? "", label: c.label ?? "Other", primary: c.primary ?? i === 0 })));
+    } catch {}
+    try {
+      const s = JSON.parse(localStorage.getItem("gg-services") ?? "null");
+      setSettings(s ?? { region: guessRegion(), ambulance: "", hospitalName: "", hospitalPhone: "" });
+    } catch { setSettings((s) => ({ ...s, region: guessRegion() })); }
+    loadedRef.current = true;
     navigator.permissions?.query({ name: "geolocation" as PermissionName }).then((p) => {
       if (p.state === "granted") setLoc("granted");
       if (p.state === "denied") setLoc("denied");
     }).catch(() => {});
   }, []);
-  useEffect(() => { localStorage.setItem("gg-contacts", JSON.stringify(contacts)); }, [contacts]);
+  useEffect(() => { if (loadedRef.current) localStorage.setItem("gg-contacts", JSON.stringify(contacts)); }, [contacts]);
+  useEffect(() => { if (loadedRef.current) localStorage.setItem("gg-services", JSON.stringify(settings)); }, [settings]);
 
   const requestLocation = useCallback(() => new Promise<boolean>((resolve) => {
     if (!navigator.geolocation) { setLoc("unsupported"); add("warn", "Geolocation not supported by this browser"); return resolve(false); }
@@ -80,11 +96,12 @@ function Dashboard() {
   }), [add]);
 
   const startEmergency = useCallback((source: string) => {
-    if (alertRef.current === "pending" || alertRef.current === "active") return;
-    setAlert("pending"); setCountdown(COUNTDOWN_S); setNotify(null);
-    add("warn", `Potential emergency detected (${source}) — ${COUNTDOWN_S}s countdown started`);
-    say(`Potential emergency detected. Confirming in ${COUNTDOWN_S} seconds. Show a fist to cancel.`);
-  }, [add, say]);
+    if (openRef.current) return;
+    // No countdown: emergency help must be immediate. Exiting the screen cancels.
+    setAlert("active"); setNotify(null); setEmergencyOpen(true);
+    add("warn", `Emergency mode activated (${source})`);
+    void requestLocation();
+  }, [add, requestLocation]);
 
   const confirmAlert = useCallback((source: string) => {
     if (alertRef.current !== "pending") { add("system", `Confirm ignored — no pending alert (${source})`); return; }
@@ -130,7 +147,7 @@ function Dashboard() {
 
   const onStable = useCallback((id: string, score: number) => {
     const g = GESTURE_BY_ID[id];
-    if (!g) return;
+    if (!g || openRef.current) return; // ignore gestures while emergency mode is on screen
     setSeen((s) => ({ ...s, [id]: Math.max(s[id] ?? 0, score) }));
     add("detect", `${g.label} recognised (${(score * 100).toFixed(0)}%) → ${g.commandLabel}`);
     run(g.command, "gesture");
@@ -163,6 +180,7 @@ function Dashboard() {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <button onClick={() => startEmergency("manual button")} className="rounded-full bg-primary px-5 py-2 text-sm font-bold uppercase tracking-wider text-primary-foreground glow-red hover:brightness-110 focus-visible:outline-2 focus-visible:outline-ring">🆘 Emergency</button>
           <Toggle label="Demo Mode" on={demo} onChange={(v) => { setDemo(v); add("system", `Demo Mode ${v ? "enabled" : "disabled"}`); }} tone={demo ? "warning" : "primary"} />
           <Toggle label="Voice" on={speak} onChange={setSpeak} />
         </div>
@@ -317,7 +335,11 @@ function Dashboard() {
 
         {/* Contacts */}
         <ContactsPanel contacts={contacts} setContacts={setContacts} demo={demo} />
+        <ServicesPanel settings={settings} setSettings={setSettings} demo={demo} onCall={(t) => add("action", demo ? `SIMULATED call to ${t.name} — no call made` : `Opened dialer for ${t.name} (${t.phone}) — call not verified`)} />
       </div>
+
+      <EmergencyMode open={emergencyOpen} demo={demo} contacts={contacts} settings={settings} onLog={add}
+        onClose={() => { setEmergencyOpen(false); cancelAlert("exit emergency mode"); }} />
 
       {/* Timeline */}
       <section className="panel mt-5 p-5">
@@ -346,25 +368,73 @@ function Dashboard() {
 function ContactsPanel({ contacts, setContacts, demo }: { contacts: Contact[]; setContacts: (c: Contact[]) => void; demo: boolean }) {
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
-  const valid = name.trim() && /^\+?[0-9 ()-]{6,}$/.test(phone.trim());
+  const [label, setLabel] = useState<ContactLabel>("Mom");
+  const [editing, setEditing] = useState<string | null>(null);
+  const valid = name.trim() && /^\+?[0-9 ()-]{3,}$/.test(phone.trim());
+  const full = !editing && contacts.length >= MAX_CONTACTS;
+  const clear = () => { setName(""); setPhone(""); setLabel("Mom"); setEditing(null); };
+  const save = () => {
+    if (!valid || full) return;
+    if (editing) setContacts(contacts.map((c) => (c.id === editing ? { ...c, name: name.trim(), phone: phone.trim(), label } : c)));
+    else setContacts([...contacts, { id: crypto.randomUUID(), name: name.trim(), phone: phone.trim(), label, primary: contacts.length === 0 }]);
+    clear();
+  };
   return (
     <section className="panel p-5">
-      <h3 className="mb-1 font-semibold">Trusted contacts</h3>
-      <p className="mb-3 text-xs text-muted-foreground">Stored only on this device. Automatic sending needs an SMS provider (e.g. Twilio) connected to a backend — not set up yet. {demo ? "In Demo Mode, sending is simulated." : "With Demo Mode off you can open your phone's SMS app manually."}</p>
-      <form onSubmit={(e) => { e.preventDefault(); if (!valid) return; setContacts([...contacts, { name: name.trim(), phone: phone.trim() }]); setName(""); setPhone(""); }} className="space-y-2">
+      <h3 className="mb-1 font-semibold">Emergency contacts <span className="font-mono text-xs text-muted-foreground">{contacts.length}/{MAX_CONTACTS}</span></h3>
+      <p className="mb-3 text-xs text-muted-foreground">Saved only in this browser on this device — never uploaded. The ⭐ primary contact is used for "call my emergency contact".</p>
+      <form onSubmit={(e) => { e.preventDefault(); save(); }} className="space-y-2">
         <input aria-label="Contact name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" className="w-full rounded-md border bg-input/30 px-3 py-2 text-sm outline-none focus:border-ring" />
-        <input aria-label="Phone number" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+91 98765 43210" inputMode="tel" className="w-full rounded-md border bg-input/30 px-3 py-2 text-sm outline-none focus:border-ring" />
-        <button disabled={!valid} className="w-full rounded-md bg-secondary py-2 text-sm font-medium hover:bg-muted disabled:opacity-40">Add contact</button>
+        <div className="flex gap-2">
+          <input aria-label="Phone number" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+91 98765 43210" inputMode="tel" className="min-w-0 flex-1 rounded-md border bg-input/30 px-3 py-2 text-sm outline-none focus:border-ring" />
+          <select aria-label="Relationship" value={label} onChange={(e) => setLabel(e.target.value as ContactLabel)} className="rounded-md border bg-card px-2 py-2 text-sm">
+            {CONTACT_LABELS.map((l) => <option key={l}>{l}</option>)}
+          </select>
+        </div>
+        <div className="flex gap-2">
+          <button disabled={!valid || full} className="flex-1 rounded-md bg-secondary py-2 text-sm font-medium hover:bg-muted disabled:opacity-40">{editing ? "Save changes" : full ? "Maximum 5 contacts" : "Add contact"}</button>
+          {editing && <button type="button" onClick={clear} className="rounded-md border px-3 text-sm">Cancel</button>}
+        </div>
       </form>
       <ul className="mt-3 space-y-1.5 text-sm">
-        {contacts.map((c, i) => (
-          <li key={i} className="flex items-center justify-between rounded-md border px-3 py-1.5">
-            <span>{c.name} <span className="font-mono text-xs text-muted-foreground">{c.phone}</span></span>
-            <button onClick={() => setContacts(contacts.filter((_, j) => j !== i))} className="text-xs text-muted-foreground hover:text-primary" aria-label={`Remove ${c.name}`}>Remove</button>
+        {contacts.map((c) => (
+          <li key={c.id} className="flex items-center gap-2 rounded-md border px-3 py-1.5">
+            <button onClick={() => setContacts(contacts.map((x) => ({ ...x, primary: x.id === c.id })))} className={c.primary ? "text-warning" : "text-muted-foreground/50 hover:text-warning"} aria-label={`Make ${c.name} primary`} title="Primary contact">★</button>
+            <span className="min-w-0 flex-1 truncate">{c.name} <span className="text-xs text-accent">{c.label}</span> <span className="font-mono text-xs text-muted-foreground">{c.phone}</span></span>
+            <button onClick={() => { setEditing(c.id); setName(c.name); setPhone(c.phone); setLabel(c.label); }} className="text-xs text-muted-foreground hover:text-foreground">Edit</button>
+            <button onClick={() => { if (confirm(`Delete ${c.name}?`)) setContacts(contacts.filter((x) => x.id !== c.id)); }} className="text-xs text-muted-foreground hover:text-primary" aria-label={`Delete ${c.name}`}>Delete</button>
           </li>
         ))}
         {!contacts.length && <li className="text-xs text-muted-foreground">No contacts yet.</li>}
       </ul>
+      {demo && !contacts.length && (
+        <button onClick={() => setContacts([
+          { id: "mock-1", name: "Test Mom", phone: "+91 00000 00001", label: "Mom", primary: true },
+          { id: "mock-2", name: "Test Dad", phone: "+91 00000 00002", label: "Dad", primary: false },
+          { id: "mock-3", name: "Test Friend", phone: "+91 00000 00003", label: "Friend", primary: false },
+        ])} className="mt-3 w-full rounded-md border border-warning/50 py-2 text-xs text-warning hover:bg-warning/10">Add mock test contacts (fake numbers)</button>
+      )}
+    </section>
+  );
+}
+
+function ServicesPanel({ settings, setSettings, demo, onCall }: { settings: ServiceSettings; setSettings: (s: ServiceSettings) => void; demo: boolean; onCall: (t: Target) => void }) {
+  return (
+    <section className="panel p-5">
+      <h3 className="mb-1 font-semibold">Emergency services</h3>
+      <p className="mb-3 text-xs text-muted-foreground">Region guessed from your device time zone — change it if wrong. In India, 112 reaches integrated emergency response.</p>
+      <select aria-label="Region" value={settings.region} onChange={(e) => setSettings({ ...settings, region: e.target.value as Region })} className="mb-3 w-full rounded-md border bg-card px-3 py-2 text-sm">
+        {(Object.keys(REGIONS) as Region[]).map((r) => <option key={r} value={r}>{REGIONS[r].name}</option>)}
+      </select>
+      <div className="space-y-2">{serviceTargets(settings).map((t) => <CallButton key={t.key} target={t} demo={demo} onCall={onCall} />)}</div>
+      <details className="mt-3 text-sm">
+        <summary className="cursor-pointer text-xs text-muted-foreground">Set local ambulance / hospital numbers</summary>
+        <div className="mt-2 space-y-2">
+          <input aria-label="Local ambulance number" value={settings.ambulance} onChange={(e) => setSettings({ ...settings, ambulance: e.target.value })} placeholder={`Ambulance (default ${REGIONS[settings.region].ambulance})`} inputMode="tel" className="w-full rounded-md border bg-input/30 px-3 py-2 text-sm" />
+          <input aria-label="Hospital name" value={settings.hospitalName} onChange={(e) => setSettings({ ...settings, hospitalName: e.target.value })} placeholder="Nearest hospital name" className="w-full rounded-md border bg-input/30 px-3 py-2 text-sm" />
+          <input aria-label="Hospital phone" value={settings.hospitalPhone} onChange={(e) => setSettings({ ...settings, hospitalPhone: e.target.value })} placeholder="Hospital phone" inputMode="tel" className="w-full rounded-md border bg-input/30 px-3 py-2 text-sm" />
+        </div>
+      </details>
     </section>
   );
 }
